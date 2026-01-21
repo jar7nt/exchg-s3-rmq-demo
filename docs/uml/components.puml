@@ -1,0 +1,45 @@
+@startuml structure
+title S3 Pointer + ACK Refcount Demo - Components
+
+skinparam componentStyle rectangle
+skinparam shadowing false
+
+package "Clients (Python emulating 1C)" {
+  [Producer (Central)] as producer
+  [Branch Consumer #1] as b1
+  [Branch Consumer #2] as b2
+  [Branch Consumer #3] as b3
+}
+
+package "Messaging" {
+  [HAProxy] as haproxy
+  node "RabbitMQ Cluster" {
+    [rmq1] as rmq1
+    [rmq2] as rmq2
+    [rmq3] as rmq3
+  }
+}
+
+package "Object Storage" {
+  [MinIO (S3)] as minio
+}
+
+package "Refcount & Cleanup" {
+  [ACK Coordinator] as coord
+  database "DB (Postgres in demo,\nMS SQL in prod)" as db
+}
+
+producer --> minio : PUT payload
+producer --> haproxy : publish pointer/store
+b1 --> haproxy : consume pointer\npublish ACK
+b2 --> haproxy : consume pointer\npublish ACK
+b3 --> haproxy : consume pointer\npublish ACK
+coord --> haproxy : consume ACK/store
+coord --> db : write/read refcount
+coord --> minio : DELETE when done
+
+haproxy --> rmq1
+haproxy --> rmq2
+haproxy --> rmq3
+
+@enduml

@@ -1,0 +1,37 @@
+@startuml sequence
+title Large Payload Flow via S3 Pointer + ACK Refcount
+
+skinparam shadowing false
+
+actor "Producer (Central)" as P
+participant "RabbitMQ (via HAProxy)" as MQ
+participant "Branch Consumer" as C
+participant "MinIO (S3)" as S3
+participant "ACK Coordinator" as K
+database "Refcount DB" as DB
+
+P -> S3 : PUT object (gzip JSON)
+S3 --> P : 200 OK
+
+P -> MQ : publish s3-store-v1
+P -> MQ : publish s3-pointer-v1
+
+MQ -> C : deliver pointer
+C -> S3 : GET object
+S3 --> C : bytes
+C -> C : decompress + deserialize + persist
+C -> MQ : publish s3-ack-v1
+
+MQ -> K : deliver ACK
+K -> DB : upsert ACK\nupdate counters
+alt all recipients ACKed
+  K -> S3 : DELETE object
+  S3 --> K : 204
+  K -> DB : mark DELETED
+end
+
+note over S3
+Lifecycle/TTL is a safety net
+end note
+
+@enduml
