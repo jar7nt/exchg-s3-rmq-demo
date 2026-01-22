@@ -1,0 +1,17 @@
+name: s3-rmq-ack-demo-i1
+
+services:
+  producer:
+    build:
+      context: ../..
+      dockerfile: services/producer/Dockerfile
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-1c-exchange}
+      MINIO_REGION: us-east-1
+    command: ["--msg-size", "1MB", "--count", "20", "--verify"]
+    depends_on:
+      minio:
+        condition: service_healthy
