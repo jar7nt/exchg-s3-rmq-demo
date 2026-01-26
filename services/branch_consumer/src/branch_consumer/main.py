@@ -2,6 +2,7 @@ import json
 import os
 import time
 import hashlib
+from datetime import datetime, timezone
 
 import boto3
 import pika
@@ -35,6 +36,9 @@ def main():
     exchange = os.getenv("RMQ_EXCHANGE", "ex.msg")
     routing_key = os.getenv("RMQ_ROUTING_KEY", "branch1")
     queue_name = os.getenv("RMQ_QUEUE", "q.branch1")
+    ack_exchange = os.getenv("RMQ_ACK_EXCHANGE", "ex.ack")
+    ack_routing_key = os.getenv("RMQ_ACK_ROUTING_KEY", "ack")
+    ack_queue = os.getenv("RMQ_ACK_QUEUE", "q.ack")
     prefetch = int(os.getenv("PREFETCH", "10"))
 
     s3 = make_s3_client(endpoint, access, secret, region)
@@ -44,9 +48,14 @@ def main():
     ch = conn.channel()
 
     # idempotent topology
+    # main exchange/queue
     ch.exchange_declare(exchange=exchange, exchange_type="direct", durable=True)
     ch.queue_declare(queue=queue_name, durable=True)
     ch.queue_bind(queue=queue_name, exchange=exchange, routing_key=routing_key)
+    # ACK exchange/queue
+    ch.exchange_declare(exchange=ack_exchange, exchange_type="direct", durable=True)
+    ch.queue_declare(queue=ack_queue, durable=True)
+    ch.queue_bind(queue=ack_queue, exchange=ack_exchange, routing_key=ack_routing_key)
 
     ch.basic_qos(prefetch_count=prefetch)
 
@@ -74,6 +83,36 @@ def main():
             size_gz = len(data)
             pointer_id = msg.get("pointer_id")
             print(f"[{consumer_id}] OK pointer_id={pointer_id} size_gz={size_gz} key={key}")
+
+            # Acknowledge message
+            recipients_total = int(msg.get("recipients_total", 1))
+
+            ack_msg = {
+                "schema": "s3-ack-v1",
+                "pointer_id": pointer_id,
+                "bucket": bucket,
+                "key": key,
+                "recipient_id": consumer_id,
+                "status": "processed",
+                "processed_at": datetime.now(timezone.utc).isoformat(),
+                "recipients_total": recipients_total,
+            }
+
+            ack_body = json.dumps(ack_msg, ensure_ascii=False).encode("utf-8")
+
+            ack_props = pika.BasicProperties(
+                content_type="application/json",
+                delivery_mode=2,
+                message_id=f"{pointer_id}:{consumer_id}",
+                timestamp=int(time.time()),
+            )
+
+            ch.basic_publish(
+                exchange=ack_exchange,
+                routing_key=ack_routing_key,
+                body=ack_body,
+                properties=ack_props,
+            )
 
             # Here would be: decompress + deserialize + persist (later)
             channel.basic_ack(delivery_tag=method.delivery_tag)

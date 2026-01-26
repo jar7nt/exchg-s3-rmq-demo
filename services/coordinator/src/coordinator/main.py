@@ -1,5 +1,76 @@
+import json
+import os
+import time
+from collections import defaultdict
+
+import pika
+
+
 def main():
-    print("ACK coordinator placeholder. Step 0 OK.")
+    amqp_url = os.getenv("AMQP_URL", "amqp://guest:guest@rabbitmq:5672/")
+    ack_exchange = os.getenv("RMQ_ACK_EXCHANGE", "ex.ack")
+    ack_routing_key = os.getenv("RMQ_ACK_ROUTING_KEY", "ack")
+    ack_queue = os.getenv("RMQ_ACK_QUEUE", "q.ack")
+    prefetch = int(os.getenv("PREFETCH", "50"))
+
+    params = pika.URLParameters(amqp_url)
+    conn = pika.BlockingConnection(params)
+    ch = conn.channel()
+
+    # idempotent topology
+    ch.exchange_declare(exchange=ack_exchange, exchange_type="direct", durable=True)
+    ch.queue_declare(queue=ack_queue, durable=True)
+    ch.queue_bind(queue=ack_queue, exchange=ack_exchange, routing_key=ack_routing_key)
+    ch.basic_qos(prefetch_count=prefetch)
+
+    # In-memory state for iteration 3
+    acks = defaultdict(set)          # pointer_id -> set(recipient_id)
+    totals = {}                      # pointer_id -> recipients_total
+    completed = set()                # pointer_ids already completed
+
+    print(f"[coordinator] consuming ACKs from queue={ack_queue} exchange={ack_exchange} rk={ack_routing_key}")
+
+    def on_ack(channel, method, properties, body: bytes):
+        try:
+            msg = json.loads(body.decode("utf-8"))
+            if msg.get("schema") != "s3-ack-v1":
+                print(f"[coordinator] skip schema={msg.get('schema')}")
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+                return
+
+            pointer_id = msg["pointer_id"]
+            recipient_id = msg["recipient_id"]
+            recipients_total = int(msg.get("recipients_total", 1))
+
+            totals.setdefault(pointer_id, recipients_total)
+            acks[pointer_id].add(recipient_id)
+
+            got = len(acks[pointer_id])
+            need = totals[pointer_id]
+
+            print(f"[coordinator] ACK pointer_id={pointer_id} from={recipient_id} ({got}/{need})")
+
+            if got >= need and pointer_id not in completed:
+                completed.add(pointer_id)
+                print(f"[coordinator] COMPLETE pointer_id={pointer_id} (all recipients processed)")
+
+            channel.basic_ack(delivery_tag=method.delivery_tag)
+
+        except Exception as e:
+            print(f"[coordinator] ERROR: {e!r} (requeue)")
+            channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+            time.sleep(1.0)
+
+    ch.basic_consume(queue=ack_queue, on_message_callback=on_ack, auto_ack=False)
+
+    try:
+        ch.start_consuming()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
 
 if __name__ == "__main__":
     main()

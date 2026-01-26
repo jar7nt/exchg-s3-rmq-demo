@@ -8,6 +8,7 @@ COMPOSE_APP   := -f infra/compose/iteration-2-clients.compose.yml
 COMPOSE := docker compose $(COMPOSE_MINIO) $(COMPOSE_RMQ) $(COMPOSE_APP)
 
 .PHONY: help up ps logs down clean producer consumer
+.PHONY: coordinator build
 
 help:
 	@echo "Targets (Iteration 2):"
@@ -44,6 +45,10 @@ down:
 clean:
 	docker compose $(COMPOSE_MINIO) $(COMPOSE_RMQ) down -v --remove-orphans
 
+# Build all services.
+build:
+	$(COMPOSE) build
+
 # Run producer as a one-shot job.
 # Params:
 #   MSG_SIZE (default 1MB)
@@ -61,3 +66,7 @@ producer:
 # Run branch consumer as a long-running job (Ctrl+C to stop).
 consumer:
 	$(COMPOSE) run --rm branch_consumer
+
+# Run coordinator as a long-running job (Ctrl+C to stop).
+coordinator:
+	$(COMPOSE) run --rm coordinator

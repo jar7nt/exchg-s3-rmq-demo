@@ -107,6 +107,7 @@ def main():
     secret = os.getenv("MINIO_SECRET_KEY", "minioadmin")
     bucket = os.getenv("MINIO_BUCKET", "1c-exchange")
     region = os.getenv("MINIO_REGION", "us-east-1")
+    recipients_total = int(os.getenv("RECIPIENTS_TOTAL", "1"))
 
     exchange = os.getenv("RMQ_EXCHANGE", "ex.msg")
     routing_key = os.getenv("RMQ_ROUTING_KEY", "branch1")
@@ -149,6 +150,7 @@ def main():
             "size_raw": len(raw),
             "size_gz": len(gz),
             "sha256": digest,
+            "recipients_total": recipients_total,
             "created_at": now.isoformat(),
         }
         pointers.append(pointer)

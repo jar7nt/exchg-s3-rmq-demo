@@ -37,10 +37,28 @@ services:
       RMQ_EXCHANGE: ex.msg
       RMQ_ROUTING_KEY: branch1
       RMQ_QUEUE: q.branch1
+      RMQ_ACK_EXCHANGE: ex.ack
+      RMQ_ACK_ROUTING_KEY: ack
+      RMQ_ACK_QUEUE: q.ack
+
       CONSUMER_ID: branch1
       PREFETCH: "10"
     depends_on:
       minio:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  coordinator:
+    build:
+      context: ../..
+      dockerfile: services/coordinator/Dockerfile
+    environment:
+      AMQP_URL: amqp://${RMQ_USER:-guest}:${RMQ_PASS:-guest}@rabbitmq:5672/
+      RMQ_ACK_EXCHANGE: ex.ack
+      RMQ_ACK_ROUTING_KEY: ack
+      RMQ_ACK_QUEUE: q.ack
+      PREFETCH: "50"
+    depends_on:
       rabbitmq:
         condition: service_healthy
