@@ -1,0 +1,17 @@
+name: s3-rmq-ack-demo-i2
+
+services:
+  rabbitmq:
+    image: rabbitmq:4-management
+    hostname: rabbitmq
+    ports:
+      - "5672:5672"     # AMQP
+      - "15672:15672"   # UI
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RMQ_PASS:-guest}
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30

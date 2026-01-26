@@ -8,6 +8,7 @@ import hashlib
 from datetime import datetime, timezone
 
 import boto3
+import pika
 
 
 def parse_size(s: str) -> int:
@@ -66,13 +67,39 @@ def make_s3_client(endpoint: str, access: str, secret: str, region: str):
     )
 
 
+def rmq_publish_pointer(pointer: dict, exchange: str, routing_key: str, queue_name: str):
+    amqp_url = os.getenv("AMQP_URL")
+    if not amqp_url:
+        return False
+
+    params = pika.URLParameters(amqp_url)
+    conn = pika.BlockingConnection(params)
+    ch = conn.channel()
+
+    # idempotent topology (demo-friendly)
+    ch.exchange_declare(exchange=exchange, exchange_type="direct", durable=True)
+    ch.queue_declare(queue=queue_name, durable=True)
+    ch.queue_bind(queue=queue_name, exchange=exchange, routing_key=routing_key)
+
+    body = json.dumps(pointer, ensure_ascii=False).encode("utf-8")
+    props = pika.BasicProperties(
+        content_type="application/json",
+        delivery_mode=2,  # persistent
+        message_id=pointer.get("pointer_id"),
+        timestamp=int(time.time()),
+    )
+    ch.basic_publish(exchange=exchange, routing_key=routing_key, body=body, properties=props)
+    conn.close()
+    return True
+
+
 def main():
-    p = argparse.ArgumentParser(description="Iteration 1: MinIO PUT/GET/DELETE demo.")
+    p = argparse.ArgumentParser(description="Iteration 2: upload to MinIO and publish pointer via RabbitMQ.")
     p.add_argument("--msg-size", required=True, help="Approx raw JSON size, e.g. 1MB, 500KB")
     p.add_argument("--count", type=int, default=10)
     p.add_argument("--prefix", default="demo")
-    p.add_argument("--verify", action="store_true", help="GET and sha256-check every object")
-    p.add_argument("--delete", action="store_true", help="DELETE objects after upload (and verify if enabled)")
+    p.add_argument("--verify", action="store_true")
+    p.add_argument("--delete", action="store_true")
     args = p.parse_args()
 
     endpoint = os.getenv("MINIO_ENDPOINT", "http://minio:9000")
@@ -81,12 +108,18 @@ def main():
     bucket = os.getenv("MINIO_BUCKET", "1c-exchange")
     region = os.getenv("MINIO_REGION", "us-east-1")
 
+    exchange = os.getenv("RMQ_EXCHANGE", "ex.msg")
+    routing_key = os.getenv("RMQ_ROUTING_KEY", "branch1")
+    queue_name = os.getenv("RMQ_QUEUE", "q.branch1")
+
     s3 = make_s3_client(endpoint, access, secret, region)
 
     target = parse_size(args.msg_size)
     t0 = time.time()
 
     pointers = []
+    published = 0
+
     for i in range(1, args.count + 1):
         payload = build_payload_approx(target, i)
         raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -120,33 +153,29 @@ def main():
         }
         pointers.append(pointer)
 
-        if i % 10 == 0 or i == args.count:
-            elapsed = time.time() - t0
-            print(f"[{i}/{args.count}] uploaded, elapsed={elapsed:.1f}s, last_key={key}")
-
         if args.verify:
             obj = s3.get_object(Bucket=bucket, Key=key)
             data = obj["Body"].read()
             if sha256_bytes(data) != digest:
                 raise RuntimeError(f"SHA mismatch for {key}")
 
+        # publish pointer to RMQ if configured
+        if rmq_publish_pointer(pointer, exchange, routing_key, queue_name):
+            published += 1
+
         if args.delete:
             s3.delete_object(Bucket=bucket, Key=key)
 
-    elapsed = time.time() - t0
-    total_raw = sum(p["size_raw"] for p in pointers)
-    total_gz = sum(p["size_gz"] for p in pointers)
+        if i % 10 == 0 or i == args.count:
+            elapsed = time.time() - t0
+            print(f"[{i}/{args.count}] uploaded, published={published}, elapsed={elapsed:.1f}s")
 
+    elapsed = time.time() - t0
     print("\n=== SUMMARY ===")
     print(f"endpoint={endpoint}")
     print(f"bucket={bucket}")
-    print(f"count={args.count}")
-    print(f"target_raw_per_msg={target} bytes")
-    print(f"total_raw={total_raw/1024/1024:.2f} MB")
-    print(f"total_gz={total_gz/1024/1024:.2f} MB")
+    print(f"published={published}/{args.count}")
     print(f"elapsed={elapsed:.2f}s")
-
-    # Print one example pointer (for docs)
     print("\nExample pointer:")
     print(json.dumps(pointers[0], ensure_ascii=False, indent=2))
 

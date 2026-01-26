@@ -1,0 +1,46 @@
+name: s3-rmq-ack-demo-i2
+
+services:
+  producer:
+    build:
+      context: ../..
+      dockerfile: services/producer/Dockerfile
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-1c-exchange}
+      MINIO_REGION: us-east-1
+
+      AMQP_URL: amqp://${RMQ_USER:-guest}:${RMQ_PASS:-guest}@rabbitmq:5672/
+      RMQ_EXCHANGE: ex.msg
+      RMQ_ROUTING_KEY: branch1
+      RMQ_QUEUE: q.branch1
+    depends_on:
+      minio:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  branch_consumer:
+    build:
+      context: ../..
+      dockerfile: services/branch_consumer/Dockerfile
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-1c-exchange}
+      MINIO_REGION: us-east-1
+
+      AMQP_URL: amqp://${RMQ_USER:-guest}:${RMQ_PASS:-guest}@rabbitmq:5672/
+      RMQ_EXCHANGE: ex.msg
+      RMQ_ROUTING_KEY: branch1
+      RMQ_QUEUE: q.branch1
+      CONSUMER_ID: branch1
+      PREFETCH: "10"
+    depends_on:
+      minio:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
