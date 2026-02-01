@@ -9,9 +9,6 @@ from psycopg.errors import UniqueViolation
 
 from coordinator.db import get_conn
 
-
-
-
 def main():
     amqp_url = os.getenv("AMQP_URL", "amqp://guest:guest@rabbitmq:5672/")
     ack_exchange = os.getenv("RMQ_ACK_EXCHANGE", "ex.ack")
@@ -48,32 +45,68 @@ def main():
         try:
             msg = json.loads(body.decode("utf-8"))
             if msg.get("schema") != "s3-ack-v1":
-                print(f"[coordinator] skip schema={msg.get('schema')}")
-                channel.basic_ack(delivery_tag=method.delivery_tag)
+                channel.basic_ack(method.delivery_tag)
                 return
 
             pointer_id = msg["pointer_id"]
             recipient_id = msg["recipient_id"]
+            processed_at = msg["processed_at"]
             recipients_total = int(msg.get("recipients_total", 1))
 
-            totals.setdefault(pointer_id, recipients_total)
-            acks[pointer_id].add(recipient_id)
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    # idempotent insert
+                    cur.execute(
+                        """
+                        INSERT INTO acks (pointer_id, recipient_id, processed_at)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (pointer_id, recipient_id) DO NOTHING
+                        """,
+                        (pointer_id, recipient_id, processed_at),
+                    )
 
-            got = len(acks[pointer_id])
-            need = totals[pointer_id]
+                    # count ACKs so far
+                    cur.execute(
+                        "SELECT COUNT(*) FROM acks WHERE pointer_id = %s",
+                        (pointer_id,),
+                    )
+                    row = cur.fetchone()
+                    ack_count = row[0] if row else 0
 
-            print(f"[coordinator] ACK pointer_id={pointer_id} from={recipient_id} ({got}/{need})")
+                    # ensure object exists (pointer may arrive slightly later)
+                    cur.execute(
+                        """
+                        INSERT INTO objects (pointer_id, bucket, object_key, recipients_total, created_at)
+                        VALUES (%s, %s, %s, %s, NOW())
+                        ON CONFLICT (pointer_id) DO NOTHING
+                        """,
+                        (
+                            pointer_id,
+                            msg.get("bucket", "unknown"),
+                            msg.get("key", "unknown"),
+                            recipients_total,
+                        ),
+                    )
 
-            if got >= need and pointer_id not in completed:
-                completed.add(pointer_id)
-                print(f"[coordinator] COMPLETE pointer_id={pointer_id} (all recipients processed)")
+                    cur.execute(
+                        "SELECT recipients_total FROM objects WHERE pointer_id = %s",
+                        (pointer_id,),
+                    )
+                    row = cur.fetchone()
+                    total = row[0] if row else recipients_total
 
-            channel.basic_ack(delivery_tag=method.delivery_tag)
+            print(
+                f"[coordinator] ACK stored pointer_id={pointer_id} "
+                f"recipient={recipient_id} ({ack_count}/{total})"
+            )
+
+            channel.basic_ack(method.delivery_tag)
 
         except Exception as e:
-            print(f"[coordinator] ERROR: {e!r} (requeue)")
-            channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
-            time.sleep(1.0)
+            print(f"[coordinator] ACK error: {e!r}")
+            channel.basic_nack(method.delivery_tag, requeue=True)
+            time.sleep(1)
+
 
     def on_pointer(channel, method, properties, body: bytes):
         try:
