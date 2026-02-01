@@ -8,6 +8,7 @@ import pika
 from psycopg.errors import UniqueViolation
 
 from coordinator.db import get_conn
+from coordinator.s3 import delete_object
 
 def main():
     amqp_url = os.getenv("AMQP_URL", "amqp://guest:guest@rabbitmq:5672/")
@@ -99,6 +100,49 @@ def main():
                 f"[coordinator] ACK stored pointer_id={pointer_id} "
                 f"recipient={recipient_id} ({ack_count}/{total})"
             )
+
+            # all recipients processed?
+            if ack_count < total:
+                channel.basic_ack(method.delivery_tag)
+                return
+
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    # try to acquire deletion lock
+                    cur.execute(
+                        """
+                        UPDATE objects
+                        SET deleted_at = NOW()
+                        WHERE pointer_id = %s
+                        AND deleted_at IS NULL
+                        """,
+                        (pointer_id,),
+                    )
+
+                    if cur.rowcount == 0:
+                        # already deleted by someone else
+                        channel.basic_ack(method.delivery_tag)
+                        return
+
+                    # fetch S3 location
+                    cur.execute(
+                        "SELECT bucket, object_key FROM objects WHERE pointer_id = %s",
+                        (pointer_id,),
+                    )
+                    row = cur.fetchone()
+                    if row is None:
+                        raise RuntimeError("Object row disappeared unexpectedly")
+
+                    bucket, object_key = row
+
+            # outside transaction: do the actual delete
+            try:
+                delete_object(bucket, object_key)
+                print(f"[coordinator] deleted S3 object {bucket}/{object_key}")
+            except Exception as e:
+                print(f"[coordinator] S3 delete failed: {e!r}")
+                # IMPORTANT: do NOT rollback deleted_at
+                # lifecycle policy + idempotent delete save us
 
             channel.basic_ack(method.delivery_tag)
 
