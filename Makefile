@@ -4,8 +4,9 @@ SHELL := /bin/bash
 COMPOSE_MINIO := -f infra/compose/iteration-1-minio.compose.yml
 COMPOSE_RMQ   := -f infra/compose/iteration-2-rmq.compose.yml
 COMPOSE_APP   := -f infra/compose/iteration-2-clients.compose.yml
+COMPOSE_DB := -f infra/compose/iteration-4-db.compose.yml
 
-COMPOSE := docker compose $(COMPOSE_MINIO) $(COMPOSE_RMQ) $(COMPOSE_APP)
+COMPOSE := docker compose $(COMPOSE_MINIO) $(COMPOSE_RMQ) $(COMPOSE_APP) $(COMPOSE_DB)
 
 .PHONY: help up ps logs down clean producer consumer
 .PHONY: coordinator build
@@ -31,19 +32,19 @@ help:
 # Start infrastructure only (MinIO + RabbitMQ).
 # Clients are run as one-shot jobs via `make producer` / `make consumer`.
 up:
-	docker compose $(COMPOSE_MINIO) $(COMPOSE_RMQ) up -d --remove-orphans
+	docker compose $(COMPOSE_MINIO) $(COMPOSE_RMQ) $(COMPOSE_DB) up -d --remove-orphans
 
 ps:
-	docker compose $(COMPOSE_MINIO) $(COMPOSE_RMQ) ps
+	docker compose $(COMPOSE_MINIO) $(COMPOSE_RMQ) $(COMPOSE_DB) ps
 
 logs:
-	docker compose $(COMPOSE_MINIO) $(COMPOSE_RMQ) logs -f
+	docker compose $(COMPOSE_MINIO) $(COMPOSE_RMQ) $(COMPOSE_DB) logs -f
 
 down:
-	docker compose $(COMPOSE_MINIO) $(COMPOSE_RMQ) down
+	docker compose $(COMPOSE_MINIO) $(COMPOSE_RMQ) $(COMPOSE_DB) down
 
 clean:
-	docker compose $(COMPOSE_MINIO) $(COMPOSE_RMQ) down -v --remove-orphans
+	docker compose $(COMPOSE_MINIO) $(COMPOSE_RMQ) $(COMPOSE_DB) down -v --remove-orphans
 
 # Build all services.
 build:

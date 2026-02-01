@@ -17,8 +17,8 @@ This repository is built incrementally using **minimal vertical slices**. Each i
 * [x] 0: Repo skeleton + UML placeholders
 * [x] 1: MinIO + basic PUT/GET/DELETE
 * [x] 2: RabbitMQ (single node) + pointer flow (producer → RMQ → consumer → S3)
-* [ ] 3: Business ACK messages
-* [ ] 4: Refcount DB + cleanup coordinator
+* [x] 3: Business ACK messages
+* [x] 4: Refcount DB + cleanup coordinator
 * [ ] 5: Multiple consumers + recipients_total logic
 * [ ] 6: RabbitMQ cluster (3 nodes) + quorum queues + HAProxy
 * [ ] 7: Prometheus + Grafana monitoring

@@ -1,0 +1,24 @@
+name: s3-rmq-ack-demo
+
+services:
+  postgres:
+    image: postgres:16
+    hostname: postgres
+    environment:
+      POSTGRES_DB: ${DB_NAME:-ackdb}
+      POSTGRES_USER: ${DB_USER:-ack}
+      POSTGRES_PASSWORD: ${DB_PASS:-ackpass}
+    ports:
+      - "15432:5432"   # optional; useful for local debugging with psql/IDE
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ack} -d ${DB_NAME:-ackdb}"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  pgdata:
+    driver: local
