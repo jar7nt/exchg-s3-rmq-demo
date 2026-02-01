@@ -126,6 +126,20 @@ make clean
 
 ---
 
+## Idempotency & Out-of-Order Guarantees
+
+This demo explicitly supports:
+- ACKs arriving before pointers
+- Duplicate ACKs
+- Duplicate pointers
+- Out-of-order delivery
+- Exactly-once S3 deletion
+
+The coordinator uses placeholder rows and a `pointer_received_at`
+marker to ensure deletion happens only after complete metadata is known.
+
+See: `tests/integration/test_idempotency.py`
+
 ## Notes
 
 * Producer and consumer are executed as **jobs**, not long-running services.

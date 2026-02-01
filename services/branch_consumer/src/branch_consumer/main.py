@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import boto3
 import pika
 
+from botocore.exceptions import ClientError
 
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
@@ -73,8 +74,24 @@ def main():
             key = msg["key"]
             expected = msg.get("sha256")
 
-            obj = s3.get_object(Bucket=bucket, Key=key)
-            data = obj["Body"].read()
+            try:
+                obj = s3.get_object(Bucket=bucket, Key=key)
+                data = obj["Body"].read()
+
+            except ClientError as e:
+                status = e.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+                code = e.response.get("Error", {}).get("Code")
+
+                # MinIO/S3: missing object often looks like 404 / NotFound
+                if status == 404 or code in ("404", "NotFound", "NoSuchKey", "NoSuchObject"):
+                    print(f"[branch1] S3 object missing {bucket}/{key} (ack, no requeue)")
+                    channel.basic_ack(method.delivery_tag)
+                    return
+
+                # Anything else: keep retrying
+                print(f"[branch1] S3 error {bucket}/{key}: status={status} code={code} (requeue)")
+                channel.basic_nack(method.delivery_tag, requeue=True)
+                return
 
             actual = sha256_bytes(data)
             if expected and actual != expected:

@@ -10,6 +10,7 @@ COMPOSE := docker compose $(COMPOSE_MINIO) $(COMPOSE_RMQ) $(COMPOSE_APP) $(COMPO
 
 .PHONY: help up ps logs down clean producer consumer
 .PHONY: coordinator build
+.PHONY: test
 
 help:
 	@echo "Targets (Iteration 2):"
@@ -49,6 +50,10 @@ clean:
 # Build all services.
 build:
 	$(COMPOSE) build
+
+test:
+	pip install -r tests/requirements.txt
+	pytest -v tests/integration
 
 # Run producer as a one-shot job.
 # Params:

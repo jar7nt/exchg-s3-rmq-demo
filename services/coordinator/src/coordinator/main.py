@@ -1,11 +1,9 @@
 import json
 import os
 import time
-from datetime import datetime
-from collections import defaultdict
+from datetime import datetime, timezone
 
 import pika
-from psycopg.errors import UniqueViolation
 
 from coordinator.db import get_conn
 from coordinator.s3 import delete_object
@@ -35,11 +33,6 @@ def main():
     
     ch.basic_qos(prefetch_count=prefetch)
 
-    # In-memory state for iteration 3
-    acks = defaultdict(set)          # pointer_id -> set(recipient_id)
-    totals = {}                      # pointer_id -> recipients_total
-    completed = set()                # pointer_ids already completed
-
     print(f"[coordinator] consuming ACKs from queue={ack_queue} exchange={ack_exchange} rk={ack_routing_key}")
 
     def on_ack(channel, method, properties, body: bytes):
@@ -52,11 +45,20 @@ def main():
             pointer_id = msg["pointer_id"]
             recipient_id = msg["recipient_id"]
             processed_at = msg["processed_at"]
-            recipients_total = int(msg.get("recipients_total", 1))
 
             with get_conn() as conn:
                 with conn.cursor() as cur:
-                    # idempotent insert
+                    # 1️⃣ Ensure placeholder object exists (ACK-before-pointer allowed)
+                    cur.execute(
+                        """
+                        INSERT INTO objects (pointer_id, created_at)
+                        VALUES (%s, NOW())
+                        ON CONFLICT (pointer_id) DO NOTHING
+                        """,
+                        (pointer_id,),
+                    )
+
+                    # 2️⃣ Idempotent ACK insert
                     cur.execute(
                         """
                         INSERT INTO acks (pointer_id, recipient_id, processed_at)
@@ -66,83 +68,95 @@ def main():
                         (pointer_id, recipient_id, processed_at),
                     )
 
-                    # count ACKs so far
+                    # 3️⃣ Count ACKs
                     cur.execute(
                         "SELECT COUNT(*) FROM acks WHERE pointer_id = %s",
                         (pointer_id,),
                     )
                     row = cur.fetchone()
-                    ack_count = row[0] if row else 0
+                    if row is None:
+                        # Should never happen, but stay defensive
+                        channel.basic_ack(method.delivery_tag)
+                        return
+                    ack_count = row[0]
 
-                    # ensure object exists (pointer may arrive slightly later)
+                    # 4️⃣ Fetch object state
                     cur.execute(
                         """
-                        INSERT INTO objects (pointer_id, bucket, object_key, recipients_total, created_at)
-                        VALUES (%s, %s, %s, %s, NOW())
-                        ON CONFLICT (pointer_id) DO NOTHING
+                        SELECT recipients_total,
+                            bucket,
+                            object_key,
+                            pointer_received_at,
+                            deleted_at
+                        FROM objects
+                        WHERE pointer_id = %s
                         """,
-                        (
-                            pointer_id,
-                            msg.get("bucket", "unknown"),
-                            msg.get("key", "unknown"),
-                            recipients_total,
-                        ),
-                    )
-
-                    cur.execute(
-                        "SELECT recipients_total FROM objects WHERE pointer_id = %s",
                         (pointer_id,),
                     )
                     row = cur.fetchone()
-                    total = row[0] if row else recipients_total
+                    if row is None:
+                        # Should never happen, but stay defensive
+                        channel.basic_ack(method.delivery_tag)
+                        return
+
+                    (
+                        recipients_total,
+                        bucket,
+                        object_key,
+                        pointer_received_at,
+                        deleted_at,
+                    ) = row
 
             print(
                 f"[coordinator] ACK stored pointer_id={pointer_id} "
-                f"recipient={recipient_id} ({ack_count}/{total})"
+                f"recipient={recipient_id} ({ack_count}/{recipients_total})"
             )
 
-            # all recipients processed?
-            if ack_count < total:
+            # 5️⃣ Deletion gate
+            if (
+                recipients_total is None
+                or pointer_received_at is None
+                or deleted_at is not None
+                or ack_count < recipients_total
+            ):
                 channel.basic_ack(method.delivery_tag)
                 return
 
+            # 6️⃣ Acquire deletion lock (pointer must be real!)
             with get_conn() as conn:
                 with conn.cursor() as cur:
-                    # try to acquire deletion lock
                     cur.execute(
                         """
                         UPDATE objects
                         SET deleted_at = NOW()
                         WHERE pointer_id = %s
                         AND deleted_at IS NULL
+                        AND pointer_received_at IS NOT NULL
                         """,
                         (pointer_id,),
                     )
 
                     if cur.rowcount == 0:
-                        # already deleted by someone else
                         channel.basic_ack(method.delivery_tag)
                         return
 
-                    # fetch S3 location
                     cur.execute(
                         "SELECT bucket, object_key FROM objects WHERE pointer_id = %s",
                         (pointer_id,),
                     )
                     row = cur.fetchone()
                     if row is None:
-                        raise RuntimeError("Object row disappeared unexpectedly")
-
+                        channel.basic_ack(method.delivery_tag)
+                        return
                     bucket, object_key = row
 
-            # outside transaction: do the actual delete
+            # 7️⃣ Perform S3 delete outside transaction
             try:
                 delete_object(bucket, object_key)
                 print(f"[coordinator] deleted S3 object {bucket}/{object_key}")
             except Exception as e:
-                print(f"[coordinator] S3 delete failed: {e!r}")
-                # IMPORTANT: do NOT rollback deleted_at
-                # lifecycle policy + idempotent delete save us
+                print(f"[coordinator] S3 delete failed: {bucket=} {e!r}")
+                # do NOT rollback deleted_at
 
             channel.basic_ack(method.delivery_tag)
 
@@ -150,6 +164,7 @@ def main():
             print(f"[coordinator] ACK error: {e!r}")
             channel.basic_nack(method.delivery_tag, requeue=True)
             time.sleep(1)
+
 
 
     def on_pointer(channel, method, properties, body: bytes):
@@ -163,23 +178,37 @@ def main():
             bucket = msg["bucket"]
             object_key = msg["key"]
             recipients_total = int(msg.get("recipients_total", 1))
+
+            # Prefer pointer's created_at if provided, else now (UTC aware)
             created_at = msg.get("created_at")
+            if created_at is None:
+                created_at = datetime.now(timezone.utc).isoformat()
 
             with get_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         """
                         INSERT INTO objects
-                        (pointer_id, bucket, object_key, recipients_total, created_at)
-                        VALUES (%s, %s, %s, %s, %s)
-                        ON CONFLICT (pointer_id) DO NOTHING
+                        (pointer_id, bucket, object_key, recipients_total, created_at, pointer_received_at)
+                        VALUES
+                        (%s, %s, %s, %s, %s, NOW())
+                        ON CONFLICT (pointer_id) DO UPDATE
+                        SET bucket = EXCLUDED.bucket,
+                            object_key = EXCLUDED.object_key,
+                            recipients_total = EXCLUDED.recipients_total,
+                            pointer_received_at = NOW(),
+                            -- created_at: keep existing unless it looks like placeholder
+                            created_at = CASE
+                                WHEN objects.pointer_received_at IS NULL THEN EXCLUDED.created_at
+                                ELSE objects.created_at
+                            END
                         """,
                         (
                             pointer_id,
                             bucket,
                             object_key,
                             recipients_total,
-                            created_at or datetime.utcnow(),
+                            created_at,
                         ),
                     )
 
