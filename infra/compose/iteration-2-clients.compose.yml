@@ -58,7 +58,11 @@ services:
       RMQ_ACK_EXCHANGE: ex.ack
       RMQ_ACK_ROUTING_KEY: ack
       RMQ_ACK_QUEUE: q.ack
+      RMQ_POINTER_EXCHANGE: ex.msg
+      RMQ_POINTER_ROUTING_KEY: branch1
+      RMQ_POINTER_QUEUE: q.pointer
       PREFETCH: "50"
+      DB_DSN: postgresql://ack:ackpass@postgres:5432/ackdb
     depends_on:
       rabbitmq:
         condition: service_healthy
