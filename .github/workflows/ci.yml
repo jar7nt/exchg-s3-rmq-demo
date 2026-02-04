@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tests/requirements.txt
+
+      - name: Start stack
+        run: |
+          docker compose \
+            -f infra/compose/iteration-1-minio.compose.yml \
+            -f infra/compose/iteration-2-rmq.compose.yml \
+            -f infra/compose/iteration-4-db.compose.yml \
+            -f infra/compose/iteration-2-clients.compose.yml \
+            up -d --build
+
+      - name: Wait for services (cheap and effective)
+        run: |
+          for i in {1..60}; do
+            if docker compose \
+              -f infra/compose/iteration-1-minio.compose.yml \
+              -f infra/compose/iteration-2-rmq.compose.yml \
+              -f infra/compose/iteration-4-db.compose.yml \
+              -f infra/compose/iteration-2-clients.compose.yml \
+              ps --status running | grep -q coordinator; then
+              echo "Containers are up"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Run integration tests
+        env:
+          # Your test uses localhost endpoints, which is correct on GitHub run
+          PYTHONUNBUFFERED: "1"
+        run: |
+          pytest -v tests/integration
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          docker compose \
+            -f infra/compose/iteration-1-minio.compose.yml \
+            -f infra/compose/iteration-2-rmq.compose.yml \
+            -f infra/compose/iteration-4-db.compose.yml \
+            -f infra/compose/iteration-2-clients.compose.yml \
+            logs --no-color
+
+      - name: Tear down
+        if: always()
+        run: |
+          docker compose \
+            -f infra/compose/iteration-1-minio.compose.yml \
+            -f infra/compose/iteration-2-rmq.compose.yml \
+            -f infra/compose/iteration-4-db.compose.yml \
+            -f infra/compose/iteration-2-clients.compose.yml \
+            down -v

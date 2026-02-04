@@ -1,3 +1,5 @@
+![CI](../../actions/workflows/ci.yml/badge.svg)
+
 # S3 Pointer + ACK Refcount Demo
 
 Demo of large message offloading from RabbitMQ to S3-compatible storage (MinIO),
