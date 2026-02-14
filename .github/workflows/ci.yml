@@ -35,37 +35,55 @@ jobs:
       - name: Wait for infra to become healthy
         run: |
           set -euo pipefail
+
+          # Compose files for infra only (same project name)
           files="-f infra/compose/iteration-1-minio.compose.yml \
                  -f infra/compose/iteration-5-rmq-cluster.compose.yml \
                  -f infra/compose/iteration-4-db.compose.yml"
 
-          # Wait up to ~180s for core infra to be healthy
-          for i in {1..90}; do
-            ok=1
-            for svc in minio postgres haproxy rmq-1 rmq-2 rmq-3; do
-              status="$(docker compose $files ps --format json 2>/dev/null | jq -r ".[] | select(.Service==\"$svc\") | .Health")"
-              if [ "$status" != "healthy" ] && [ "$svc" != "postgres" ]; then
-                ok=0
-              fi
-              # postgres often shows empty Health in compose json; treat "running" as OK
-              if [ "$svc" = "postgres" ]; then
-                state="$(docker compose $files ps --format json 2>/dev/null | jq -r ".[] | select(.Service==\"$svc\") | .State")"
-                if [ "$state" != "running" ]; then ok=0; fi
-              fi
-            done
+          # Get container IDs by service name (robust)
+          cid() { docker compose $files ps -q "$1"; }
 
-            if [ "$ok" = "1" ]; then
-              echo "Infra is healthy"
-              exit 0
+          wait_healthy() {
+            local svc="$1"
+            local id
+            id="$(cid "$svc")"
+            if [ -z "$id" ]; then
+              echo "Service '$svc' has no container ID (not started?)"
+              docker compose $files ps
+              return 1
             fi
 
-            echo "Waiting for infra... ($i/90)"
-            sleep 2
-          done
+            for i in {1..120}; do
+              # If there is a healthcheck, this will be healthy/unhealthy; if not, empty
+              health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$id" 2>/dev/null || true)"
+              state="$(docker inspect -f '{{.State.Status}}' "$id" 2>/dev/null || true)"
 
-          echo "Infra did not become healthy in time"
-          docker compose $files ps
-          exit 1
+              # Healthy if health says healthy OR no healthcheck but state is running
+              if [ "$health" = "healthy" ] || { [ -z "$health" ] && [ "$state" = "running" ]; }; then
+                echo "OK: $svc (state=$state health=${health:-none})"
+                return 0
+              fi
+
+              echo "Waiting: $svc (state=$state health=${health:-none}) [$i/120]"
+              sleep 2
+            done
+
+            echo "Timeout waiting for $svc to become healthy"
+            docker compose $files ps
+            return 1
+          }
+
+          # Core infra services
+          wait_healthy minio
+          wait_healthy postgres
+          wait_healthy rmq-1
+          wait_healthy rmq-2
+          wait_healthy rmq-3
+          wait_healthy haproxy
+
+          echo "All infra services are ready ✅"
+
 
       - name: Run integration tests
         env:
