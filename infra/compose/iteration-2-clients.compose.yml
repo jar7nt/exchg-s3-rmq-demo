@@ -12,14 +12,14 @@ services:
       MINIO_BUCKET: ${MINIO_BUCKET:-1c-exchange}
       MINIO_REGION: us-east-1
 
-      AMQP_URL: amqp://${RMQ_USER:-guest}:${RMQ_PASS:-guest}@rabbitmq:5672/
+      AMQP_URL: amqp://${RMQ_USER:-guest}:${RMQ_PASS:-guest}@haproxy:5672/
       RMQ_EXCHANGE: ex.msg
       RMQ_ROUTING_KEY: branch1
       RMQ_QUEUE: q.branch1
     depends_on:
       minio:
         condition: service_healthy
-      rabbitmq:
+      haproxy:
         condition: service_healthy
 
   branch_consumer:
@@ -33,7 +33,7 @@ services:
       MINIO_BUCKET: ${MINIO_BUCKET:-1c-exchange}
       MINIO_REGION: us-east-1
 
-      AMQP_URL: amqp://${RMQ_USER:-guest}:${RMQ_PASS:-guest}@rabbitmq:5672/
+      AMQP_URL: amqp://${RMQ_USER:-guest}:${RMQ_PASS:-guest}@haproxy:5672/
       RMQ_EXCHANGE: ex.msg
       RMQ_ROUTING_KEY: branch1
       RMQ_QUEUE: q.branch1
@@ -46,7 +46,7 @@ services:
     depends_on:
       minio:
         condition: service_healthy
-      rabbitmq:
+      haproxy:
         condition: service_healthy
 
   coordinator:
@@ -54,7 +54,7 @@ services:
       context: ../..
       dockerfile: services/coordinator/Dockerfile
     environment:
-      AMQP_URL: amqp://${RMQ_USER:-guest}:${RMQ_PASS:-guest}@rabbitmq:5672/
+      AMQP_URL: amqp://${RMQ_USER:-guest}:${RMQ_PASS:-guest}@haproxy:5672/
       RMQ_ACK_EXCHANGE: ex.ack
       RMQ_ACK_ROUTING_KEY: ack
       RMQ_ACK_QUEUE: q.ack
@@ -68,5 +68,6 @@ services:
       S3_SECRET_KEY: minioadmin
 
     depends_on:
-      rabbitmq:
+      haproxy:
         condition: service_healthy
+

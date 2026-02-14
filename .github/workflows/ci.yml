@@ -1,4 +1,4 @@
-name: CI
+name: ci
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
 jobs:
   integration:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -16,7 +16,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.12"
 
       - name: Install test dependencies
         run: |
@@ -27,29 +27,48 @@ jobs:
         run: |
           docker compose \
             -f infra/compose/iteration-1-minio.compose.yml \
-            -f infra/compose/iteration-2-rmq.compose.yml \
+            -f infra/compose/iteration-5-rmq-cluster.compose.yml \
             -f infra/compose/iteration-4-db.compose.yml \
             -f infra/compose/iteration-2-clients.compose.yml \
-            up -d --build
+            up -d --build --remove-orphans
 
-      - name: Wait for services (cheap and effective)
+      - name: Wait for infra to become healthy
         run: |
-          for i in {1..60}; do
-            if docker compose \
-              -f infra/compose/iteration-1-minio.compose.yml \
-              -f infra/compose/iteration-2-rmq.compose.yml \
-              -f infra/compose/iteration-4-db.compose.yml \
-              -f infra/compose/iteration-2-clients.compose.yml \
-              ps --status running | grep -q coordinator; then
-              echo "Containers are up"
-              break
+          set -euo pipefail
+          files="-f infra/compose/iteration-1-minio.compose.yml \
+                 -f infra/compose/iteration-5-rmq-cluster.compose.yml \
+                 -f infra/compose/iteration-4-db.compose.yml"
+
+          # Wait up to ~180s for core infra to be healthy
+          for i in {1..90}; do
+            ok=1
+            for svc in minio postgres haproxy rmq-1 rmq-2 rmq-3; do
+              status="$(docker compose $files ps --format json 2>/dev/null | jq -r ".[] | select(.Service==\"$svc\") | .Health")"
+              if [ "$status" != "healthy" ] && [ "$svc" != "postgres" ]; then
+                ok=0
+              fi
+              # postgres often shows empty Health in compose json; treat "running" as OK
+              if [ "$svc" = "postgres" ]; then
+                state="$(docker compose $files ps --format json 2>/dev/null | jq -r ".[] | select(.Service==\"$svc\") | .State")"
+                if [ "$state" != "running" ]; then ok=0; fi
+              fi
+            done
+
+            if [ "$ok" = "1" ]; then
+              echo "Infra is healthy"
+              exit 0
             fi
-            sleep 1
+
+            echo "Waiting for infra... ($i/90)"
+            sleep 2
           done
+
+          echo "Infra did not become healthy in time"
+          docker compose $files ps
+          exit 1
 
       - name: Run integration tests
         env:
-          # Your test uses localhost endpoints, which is correct on GitHub run
           PYTHONUNBUFFERED: "1"
         run: |
           pytest -v tests/integration
@@ -59,7 +78,7 @@ jobs:
         run: |
           docker compose \
             -f infra/compose/iteration-1-minio.compose.yml \
-            -f infra/compose/iteration-2-rmq.compose.yml \
+            -f infra/compose/iteration-5-rmq-cluster.compose.yml \
             -f infra/compose/iteration-4-db.compose.yml \
             -f infra/compose/iteration-2-clients.compose.yml \
             logs --no-color
@@ -69,7 +88,7 @@ jobs:
         run: |
           docker compose \
             -f infra/compose/iteration-1-minio.compose.yml \
-            -f infra/compose/iteration-2-rmq.compose.yml \
+            -f infra/compose/iteration-5-rmq-cluster.compose.yml \
             -f infra/compose/iteration-4-db.compose.yml \
             -f infra/compose/iteration-2-clients.compose.yml \
-            down -v
+            down -v --remove-orphans

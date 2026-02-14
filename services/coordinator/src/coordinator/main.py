@@ -24,11 +24,23 @@ def main():
 
     # idempotent topology
     ch.exchange_declare(exchange=ack_exchange, exchange_type="direct", durable=True)
-    ch.queue_declare(queue=ack_queue, durable=True)
+    ch.queue_declare(
+        queue=ack_queue, 
+        durable=True,
+        arguments={
+        "x-queue-type": "quorum"
+        }
+    )
     ch.queue_bind(queue=ack_queue, exchange=ack_exchange, routing_key=ack_routing_key)
 
     ch.exchange_declare(exchange=ptr_exchange, exchange_type="direct", durable=True)
-    ch.queue_declare(queue=ptr_queue, durable=True)
+    ch.queue_declare(
+        queue=ptr_queue, 
+        durable=True,
+        arguments={
+        "x-queue-type": "quorum"
+        }
+    )
     ch.queue_bind(queue=ptr_queue, exchange=ptr_exchange, routing_key=ptr_routing_key)
     
     ch.basic_qos(prefetch_count=prefetch)
