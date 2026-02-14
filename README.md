@@ -5,148 +5,157 @@
 Demo of large message offloading from RabbitMQ to S3-compatible storage (MinIO),
 with ACK-based refcount tracking and cleanup coordinator.
 
-Tested with python 3.12.12
+Tested with Python 3.12
+
+---
 
 ## Goal
 
-Show how to keep RabbitMQ lightweight by sending only pointers to large payloads,
-stored in S3 (MinIO), and delete objects safely after all consumers confirm processing.
+Keep RabbitMQ lightweight by sending only S3 pointers,
+while large payloads are stored in MinIO.
 
-This repository is built incrementally using **minimal vertical slices**. Each iteration results in a runnable system and is preserved in Git history.
+Delete S3 objects only after all recipients confirm processing.
+
+The repository evolves in minimal vertical slices.
+Each iteration remains runnable and preserved in Git history.
+
+---
 
 ## Iterations roadmap
 
-* [x] 0: Repo skeleton + UML placeholders
-* [x] 1: MinIO + basic PUT/GET/DELETE
-* [x] 2: RabbitMQ (single node) + pointer flow (producer → RMQ → consumer → S3)
-* [x] 3: Business ACK messages
-* [x] 4: Refcount DB + cleanup coordinator
-* [ ] 5: Multiple consumers + recipients_total logic
-* [ ] 6: RabbitMQ cluster (3 nodes) + quorum queues + HAProxy
-* [ ] 7: Prometheus + Grafana monitoring
-
-## Architecture
-
-High-level architecture and message flow diagrams are available here:
-
-* `docs/ARCHITECTURE.md`
-* `docs/uml/components.puml`
-* `docs/uml/sequence.puml`
+- [x] 0: Repo skeleton + UML placeholders
+- [x] 1: MinIO + basic PUT/GET/DELETE
+- [x] 2: RabbitMQ (single node) + pointer flow
+- [x] 3: Business ACK messages
+- [x] 4: Refcount DB + cleanup coordinator
+- [x] 5: RabbitMQ cluster (3 nodes) + quorum queues + HAProxy
+- [ ] 6: Multiple consumers + recipients_total logic
+- [ ] 7: Prometheus + Grafana monitoring
 
 ---
 
-## Current iteration: Iteration 2
+## Current iteration
 
-Iteration 2 introduces **RabbitMQ as a transport layer**. Large payloads are stored in MinIO, while RabbitMQ carries only lightweight S3 pointers.
+### RabbitMQ cluster
 
-### Components involved
+- 3 nodes (rmq-1, rmq-2, rmq-3)
+- Shared Erlang cookie (hardcoded for demo stability)
+- Cluster formed via init container
+- Quorum queues
+- HAProxy as single AMQP + Management endpoint
 
-* MinIO (S3-compatible object storage)
-* RabbitMQ (single node, management enabled)
-* Producer (one-shot job, emulates central 1C)
-* Branch consumer (long-running job, emulates a филиал)
+### PostgreSQL
+
+- Stores pointer metadata
+- Tracks ACK refcount
+- Guarantees exactly-once deletion
 
 ---
 
-## How to run (Iteration 2)
+## How to run
 
-### 1. Start infrastructure (MinIO + RabbitMQ)
+### 1. Start infrastructure
 
-```bash
+<pre>
 make up
-```
+</pre>
 
-Services:
+Endpoints:
 
-* MinIO API: [http://localhost:9000](http://localhost:9000)
-* MinIO Console: [http://localhost:9001](http://localhost:9001)
-* RabbitMQ UI: [http://localhost:15672](http://localhost:15672) (guest / guest)
+- MinIO API: http://localhost:9000
+- MinIO Console: http://localhost:9001
+- RabbitMQ UI (via HAProxy): http://localhost:15672
 
 ---
 
-### 2. Start branch consumer (terminal A)
+### 2. Start coordinator
 
-```bash
+<pre>
+make coordinator
+</pre>
+
+Coordinator:
+
+- consumes ACK messages
+- updates refcount
+- deletes S3 object when all recipients processed
+
+---
+
+### 3. Start branch consumer
+
+<pre>
 make consumer
-```
+</pre>
 
-The consumer:
+Consumer:
 
-* subscribes to RabbitMQ queue
-* receives S3 pointers
-* downloads payloads from MinIO
-* verifies SHA-256 checksum
-* acknowledges messages to RabbitMQ
-
-Stop with `Ctrl+C`.
+- consumes S3 pointers
+- downloads payload from MinIO
+- verifies checksum
+- sends business ACK
 
 ---
 
-### 3. Run producer job (terminal B)
+### 4. Run producer
 
-```bash
+<pre>
 make producer MSG_SIZE=1MB COUNT=5 VERIFY=1
-```
+</pre>
 
-Producer behavior:
+Producer:
 
-* generates large JSON payloads
-* compresses them with gzip
-* uploads objects to MinIO
-* publishes `s3-pointer-v1` messages to RabbitMQ
-
-Optional cleanup:
-
-```bash
-make producer MSG_SIZE=1MB COUNT=5 VERIFY=1 DELETE=1
-```
+- generates JSON payload
+- compresses with gzip
+- uploads object to MinIO
+- publishes pointer message
 
 ---
 
-### 4. Inspect system state
+## Failover test
 
-```bash
-make ps
-make logs
-```
+You can simulate node failure:
 
----
+1. Start traffic (producer + consumer running)
+2. Stop one RabbitMQ node:
 
-### 5. Stop or reset
+<pre>
+docker stop s3-rmq-ack-demo-rmq-1-1
+</pre>
 
-Stop infrastructure (keep data):
+Expected behaviour:
 
-```bash
-make down
-```
-
-Full cleanup (remove volumes and orphan containers):
-
-```bash
-make clean
-```
+- Quorum elects new leader
+- HAProxy routes to healthy nodes
+- Existing AMQP connections to the stopped node are closed by broker (expected)
+- Clients must reconnect (automatic retry is not implemented in this demo)
 
 ---
 
-## Idempotency & Out-of-Order Guarantees
+## Idempotency guarantees
 
-This demo explicitly supports:
-- ACKs arriving before pointers
-- Duplicate ACKs
+This demo supports:
+
 - Duplicate pointers
+- Duplicate ACKs
+- ACK before pointer
 - Out-of-order delivery
 - Exactly-once S3 deletion
 
-The coordinator uses placeholder rows and a `pointer_received_at`
-marker to ensure deletion happens only after complete metadata is known.
+See:
 
-See: `tests/integration/test_idempotency.py`
+- tests/integration/test_idempotency.py
+
+---
 
 ## Notes
 
-* Producer and consumer are executed as **jobs**, not long-running services.
-* Healthchecks are enabled for infrastructure components.
-* This iteration focuses on transport and integration only. Business-level ACK and refcount logic will be added in the next iterations.
+- Clients run as jobs (not services)
+- Healthchecks enabled
+- Quorum queues used instead of classic mirrored queues
+- Designed as architecture demonstration, not a production-ready retry implementation
+
+---
 
 ## License
 

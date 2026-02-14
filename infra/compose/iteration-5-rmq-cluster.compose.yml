@@ -1,0 +1,117 @@
+name: s3-rmq-ack-demo
+
+services:
+  rmq-1:
+    image: rabbitmq:4-management
+    hostname: rmq-1
+    volumes:
+      - rmq1_data:/var/lib/rabbitmq
+    command: >
+      bash -lc '
+        echo "supersecretcookie" > /var/lib/rabbitmq/.erlang.cookie &&
+        chown rabbitmq:rabbitmq /var/lib/rabbitmq/.erlang.cookie &&
+        chmod 400 /var/lib/rabbitmq/.erlang.cookie &&
+        exec docker-entrypoint.sh rabbitmq-server
+      '
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  rmq-2:
+    image: rabbitmq:4-management
+    hostname: rmq-2
+    volumes:
+      - rmq2_data:/var/lib/rabbitmq
+    command: >
+      bash -lc '
+        echo "supersecretcookie" > /var/lib/rabbitmq/.erlang.cookie &&
+        chown rabbitmq:rabbitmq /var/lib/rabbitmq/.erlang.cookie &&
+        chmod 400 /var/lib/rabbitmq/.erlang.cookie &&
+        exec docker-entrypoint.sh rabbitmq-server
+      '
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  rmq-3:
+    image: rabbitmq:4-management
+    hostname: rmq-3
+    volumes:
+      - rmq3_data:/var/lib/rabbitmq
+    command: >
+      bash -lc '
+        echo "supersecretcookie" > /var/lib/rabbitmq/.erlang.cookie &&
+        chown rabbitmq:rabbitmq /var/lib/rabbitmq/.erlang.cookie &&
+        chmod 400 /var/lib/rabbitmq/.erlang.cookie &&
+        exec docker-entrypoint.sh rabbitmq-server
+      '
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  # One-shot init container that joins rmq-2 and rmq-3 to rmq-1
+  rmq-init:
+    image: rabbitmq:4-management
+    depends_on:
+      rmq-1:
+        condition: service_healthy
+      rmq-2:
+        condition: service_healthy
+      rmq-3:
+        condition: service_healthy
+    environment:
+      RABBITMQ_ERLANG_COOKIE: "supersecretcookie"
+    entrypoint: ["/bin/bash", "-lc"]
+    command: >
+      '
+      set -euo pipefail;
+
+      echo "[init] waiting for rmq-1 CLI...";
+      rabbitmq-diagnostics -n rabbit@rmq-1 -q ping;
+
+      echo "[init] join rmq-2 -> rmq-1";
+      rabbitmqctl -n rabbit@rmq-2 stop_app || true;
+      rabbitmqctl -n rabbit@rmq-2 reset || true;
+      rabbitmqctl -n rabbit@rmq-2 join_cluster rabbit@rmq-1 || true;
+      rabbitmqctl -n rabbit@rmq-2 start_app;
+
+      echo "[init] join rmq-3 -> rmq-1";
+      rabbitmqctl -n rabbit@rmq-3 stop_app || true;
+      rabbitmqctl -n rabbit@rmq-3 reset || true;
+      rabbitmqctl -n rabbit@rmq-3 join_cluster rabbit@rmq-1 || true;
+      rabbitmqctl -n rabbit@rmq-3 start_app;
+
+      echo "[init] cluster_status from rmq-1:";
+      rabbitmqctl -n rabbit@rmq-1 cluster_status;
+
+      echo "[init] done.";
+      '
+    restart: "no"
+
+  haproxy:
+    image: haproxy:2.9
+    hostname: haproxy
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - ../deploy/rmq/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      rmq-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "haproxy", "-c", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  rmq1_data:
+  rmq2_data:
+  rmq3_data:

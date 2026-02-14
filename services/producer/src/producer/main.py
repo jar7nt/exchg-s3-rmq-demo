@@ -78,7 +78,13 @@ def rmq_publish_pointer(pointer: dict, exchange: str, routing_key: str, queue_na
 
     # idempotent topology (demo-friendly)
     ch.exchange_declare(exchange=exchange, exchange_type="direct", durable=True)
-    ch.queue_declare(queue=queue_name, durable=True)
+    ch.queue_declare(
+        queue=queue_name, 
+        durable=True,
+        arguments={
+        "x-queue-type": "quorum"
+        }
+    )
     ch.queue_bind(queue=queue_name, exchange=exchange, routing_key=routing_key)
 
     body = json.dumps(pointer, ensure_ascii=False).encode("utf-8")

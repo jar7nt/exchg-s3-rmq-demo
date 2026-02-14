@@ -2,9 +2,9 @@ SHELL := /bin/bash
 
 # Compose bundles for the CURRENT iteration
 COMPOSE_MINIO := -f infra/compose/iteration-1-minio.compose.yml
-COMPOSE_RMQ   := -f infra/compose/iteration-2-rmq.compose.yml
+COMPOSE_RMQ   := -f infra/compose/iteration-5-rmq-cluster.compose.yml
 COMPOSE_APP   := -f infra/compose/iteration-2-clients.compose.yml
-COMPOSE_DB := -f infra/compose/iteration-4-db.compose.yml
+COMPOSE_DB    := -f infra/compose/iteration-4-db.compose.yml
 
 COMPOSE := docker compose $(COMPOSE_MINIO) $(COMPOSE_RMQ) $(COMPOSE_APP) $(COMPOSE_DB)
 
@@ -13,10 +13,11 @@ COMPOSE := docker compose $(COMPOSE_MINIO) $(COMPOSE_RMQ) $(COMPOSE_APP) $(COMPO
 .PHONY: test
 
 help:
-	@echo "Targets (Iteration 2):"
-	@echo "  up        - start infra (MinIO + RabbitMQ) in background"
-	@echo "  producer  - run producer job (uploads to MinIO, publishes pointers to RMQ)"
+	@echo "Targets (Iteration 5):"
+	@echo "  up        - start infra (MinIO + RabbitMQ cluster + HAProxy + DB) in background"
+	@echo "  producer  - run producer job (uploads to MinIO, publishes pointers to RMQ via HAProxy)"
 	@echo "  consumer  - run branch consumer (consumes pointers, downloads from MinIO)"
+	@echo "  coordinator - run coordinator (tracks ACKs and deletes S3 objects)"
 	@echo "  ps        - show containers status"
 	@echo "  logs      - follow infra logs"
 	@echo "  down      - stop infra (keeps volumes)"
@@ -30,7 +31,7 @@ help:
 	@echo "  make logs"
 	@echo "  make clean"
 
-# Start infrastructure only (MinIO + RabbitMQ).
+# Start infrastructure only (MinIO + RabbitMQ cluster + HAProxy + DB).
 # Clients are run as one-shot jobs via `make producer` / `make consumer`.
 up:
 	docker compose $(COMPOSE_MINIO) $(COMPOSE_RMQ) $(COMPOSE_DB) up -d --remove-orphans
@@ -62,6 +63,7 @@ test:
 #   VERIFY   (set to 1 to enable --verify)
 #   DELETE   (set to 1 to enable --delete)
 producer:
+	@sleep 3; 
 	MSG_SIZE=$${MSG_SIZE:-1MB}; \
 	COUNT=$${COUNT:-5}; \
 	VERIFY_FLAG=$$( [ "$${VERIFY:-0}" = "1" ] && echo "--verify" || true ); \
